@@ -1,6 +1,7 @@
 pub mod event_pt;
 pub mod maximize;
 pub mod medley;
+pub mod micro_opt;
 pub mod model;
 pub mod pt_evaluate;
 pub mod pt_maximize;

@@ -1,7 +1,8 @@
 use crate::{
     published_score_range_song_selections, update_score_range_chart_meta,
     BestdoriFilesystemCalculationInputBuilder, BestdoriFilesystemConfig, DataError,
-    MaximizeInputBuilder, PtMaximizeInputBuilder, ScoreRangeInputBuilder,
+    MaximizeInputBuilder, MicroOptimizeInputBuilder, MicroOptimizeOutcome, PtMaximizeInputBuilder,
+    ScoreRangeInputBuilder,
 };
 use async_trait::async_trait;
 use bangdream_optimize_core::{
@@ -180,6 +181,40 @@ impl BestdoriCachedFilesystemCalculationInputBuilder {
             self.clear_loaded_calculator()?;
         }
         self.pt_evaluate_from_cache(player, server, Some(selected_event_id), request)
+    }
+
+    pub fn micro_optimize_sync(
+        &self,
+        player: PlayerConfig,
+        event_id: u32,
+        song: SongSelection,
+        team: [u32; 5],
+        judgement_windows: Option<bangdream_optimize_core::micro_opt::JudgementWindowSet>,
+    ) -> Result<MicroOptimizeOutcome, DataError> {
+        if self.sync_for_inner(event_id, std::slice::from_ref(&song), Some(&player))? {
+            self.clear_loaded_calculator()?;
+        }
+        self.micro_optimize_from_cache(player, event_id, song, team, judgement_windows)
+    }
+
+    fn micro_optimize_from_cache(
+        &self,
+        player: PlayerConfig,
+        event_id: u32,
+        song: SongSelection,
+        team: [u32; 5],
+        judgement_windows: Option<bangdream_optimize_core::micro_opt::JudgementWindowSet>,
+    ) -> Result<MicroOptimizeOutcome, DataError> {
+        let mut calculator = self.calculator_lock()?;
+        if calculator.is_none() {
+            *calculator = Some(BestdoriFilesystemCalculationInputBuilder::load(
+                BestdoriFilesystemConfig::from_bestdori_api_root(self.config.cache_root.clone()),
+            )?);
+        }
+        calculator
+            .as_ref()
+            .expect("calculator was loaded")
+            .micro_optimize_sync(&player, event_id, &song, &team, judgement_windows)
     }
 
     fn sync_score_range_for_inner(
@@ -762,6 +797,20 @@ impl MaximizeInputBuilder for BestdoriCachedFilesystemCalculationInputBuilder {
         options: ItemSearchOptions,
     ) -> Result<BuildResult, DataError> {
         self.maximize_sync(player, server, event_id, options)
+    }
+}
+
+#[async_trait]
+impl MicroOptimizeInputBuilder for BestdoriCachedFilesystemCalculationInputBuilder {
+    async fn micro_optimize(
+        &self,
+        player: PlayerConfig,
+        event_id: u32,
+        song: SongSelection,
+        team: [u32; 5],
+        judgement_windows: Option<bangdream_optimize_core::micro_opt::JudgementWindowSet>,
+    ) -> Result<MicroOptimizeOutcome, DataError> {
+        self.micro_optimize_sync(player, event_id, song, team, judgement_windows)
     }
 }
 

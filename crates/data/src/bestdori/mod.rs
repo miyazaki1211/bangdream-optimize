@@ -60,6 +60,23 @@ impl BestdoriData {
         self.card_definition_from_card(card_id, card)
     }
 
+    /// Raw `skillId` of a catalog card, used by the micro-optimisation skill
+    /// resolution.
+    pub fn card_skill_id(&self, card_id: u32) -> Result<u32, DataError> {
+        let card = self.entity(&self.cards, "card", card_id)?;
+        card.get("skillId")
+            .and_then(Value::as_u64)
+            .map(|value| value as u32)
+            .ok_or(DataError::MissingField {
+                field: "card.skillId",
+            })
+    }
+
+    /// Raw Bestdori skill JSON for full effect-family parsing.
+    pub fn skill_value(&self, skill_id: u32) -> Option<&Value> {
+        self.skills.get(&skill_id.to_string())
+    }
+
     pub fn card_has_level(&self, card_id: u32, level: u8) -> Result<bool, DataError> {
         let card = self.entity(&self.cards, "card", card_id)?;
         Ok(card_has_level(card, level))

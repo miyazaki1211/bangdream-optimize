@@ -3,7 +3,10 @@ use async_trait::async_trait;
 use bangdream_optimize_core::{
     BuildResult, MaximizeOptions, PlayerConfig, PtEvaluateRequest, PtEvaluateResult,
     PtMaximizeRequest, PtMaximizeResult, ScoreRangeRequest, ScoreRangeResult, Server,
+    SongSelection,
 };
+
+use crate::micro::MicroOptimizeOutcome;
 
 #[async_trait]
 pub trait PlayerConfigStore: Send + Sync {
@@ -70,4 +73,16 @@ pub trait PtMaximizeInputBuilder: Send + Sync {
         event_id: Option<u32>,
         request: PtEvaluateRequest,
     ) -> Result<PtEvaluateResult, DataError>;
+}
+
+#[async_trait]
+pub trait MicroOptimizeInputBuilder: Send + Sync {
+    async fn micro_optimize(
+        &self,
+        player: PlayerConfig,
+        event_id: u32,
+        song: SongSelection,
+        team: [u32; 5],
+        judgement_windows: Option<bangdream_optimize_core::micro_opt::JudgementWindowSet>,
+    ) -> Result<MicroOptimizeOutcome, DataError>;
 }

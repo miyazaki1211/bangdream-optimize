@@ -164,6 +164,10 @@ pub struct CardDefinition {
     pub training_stat: Stat,
     pub episode_stats: [Stat; 2],
     pub skill: SkillDefinition,
+    /// Bestdori 未收录真实属性的占位卡（如卡片创作等活动卡，所有等级三维均为 15000）。
+    /// 组队计算时应将其排除，避免占位数值污染综合力与分数。
+    #[serde(default)]
+    pub stat_placeholder: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -953,6 +957,7 @@ mod tests {
                 },
                 rateup: false,
             },
+            stat_placeholder: false,
         }
     }
 

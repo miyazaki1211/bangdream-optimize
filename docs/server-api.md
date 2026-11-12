@@ -394,6 +394,92 @@ POST /v1/score-range/from-config
 
 `totalFireCost` 是搜索使用的实际火耗。`totalFireMultiplier` 是各局火倍率乘以次数后的旧统计值，
 仅为兼容保留，不参与最优解比较。
+## 微操优化（Micro-Optimize）
+
+```http
+POST /v1/micro-optimize
+POST /v1/micro-optimize/from-config
+```
+
+两个入口分别使用 `playerId` 读取已存储档案，或直接接收 `player`（字段结构
+与 `/v1/score-range/from-config` 的 `player` 相同）。入口返回指定谱面的
+理论最高分与最优微操偏移表：
+
+- `baselineScore`：枚举全部技能绑定（600 序）后的自然时序最高分。
+- `maxScore`：最优技能绑定
+  加 note 帧偏移微操后的理论最高分。
+- `skillOrder`：6 个技能槽绑定的卡牌 ID（第 6 槽自由枚举，可重复队首卡）。
+- `optimizations`：非零帧偏移表（1 帧 = 1/60 秒），含偏移后的判定结果。
+- `skillWindows`：六个技能窗口（起止时间、触发 note、覆盖 note 数）。
+
+请求体：
+
+```json
+{
+  "playerId": 1009447981,
+  "eventId": 326,
+  "songId": 785,
+  "difficulty": 3,
+  "team": [1958, 2424, 2361, 2423, 2033],
+  "judgementWindows": {
+    "tap": [[-2.5, 2.5], [-6.5, 6.5], [-7.5, 7.5], [-8.5, 8.5]],
+    "longEnd": [[-3.5, 3.5], [-7.5, 7.5], [-8.5, 8.5], [-9.5, 9.5]]
+  }
+}
+```
+
+字段说明：
+
+- `playerId`：MongoDB 玩家 ID（`from-config` 入口改传 `player`）。
+- `eventId`：活动 ID。
+- `songId` / `difficulty`：歌曲与难度。
+- `team`：恰好 5 张卡牌 ID；占位属性卡会被拒绝。
+- `judgementWindows`：可选。自定义各 note 类型的判定区间（单位：帧）。
+
+### judgementWindows 判定区间
+
+默认表为**游戏实测判定窗**（毫秒为近似值；负数提前、正数延后；所有区间除
+特别注明外均包含边界值）：
+
+| 类型 | PERFECT(帧) | GREAT | GOOD | BAD |
+|---|---|---|---|---|
+| tap / flick / directionalFlick / slideStraightStart | ±2.5(±41.667ms,含边界) | ±6.5 | ±7.5 | ±8.5 |
+| longStart | ±3.5 | ±6.5 | ±7.5 | ±8.5 |
+| longEnd / longFlick | ±4.5 | ±7.5 | ±8.5 | ±9.5 |
+| slideStraightEnd | **(−3.5, +3.5) 不含边界**(±58.333ms) | −3.5 ~ +12.5 | −3.5 ~ +12.5 | −3.5 ~ +12.5 |
+| slideShiftStart / slideShiftEnd | −3.5 ~ +12.5(−58.333 ~ +208.333ms,含边界) | −3.5 ~ +12.5 | −3.5 ~ +12.5 | −3.5 ~ +12.5 |
+| slideTick | 0 ~ +12.5 | — | — | — |
+| slideFlick | 0 ~ +6.5 | — | — | — |
+
+谱面解析会把绿条按「连接点是否变轨」分为直线 slideStraight*（全部连接点
+同轨）与变轨 slideShift*（任意相邻连接点变轨）两类；隐藏连接点计入几何
+判断。如需 Bestdori 工具的旧窗表（tap 为 PERFECT ±3.5、全部绿条
+−3.5 ~ +12.5，均含边界），可通过 `judgementWindows` 显式传回。
+
+传入规则：
+
+- 键名为 note 类型（上表第一列的 camelCase），值为此类型按
+  perfect → great → good → bad 顺序排列的区间数组；每个元素为
+  `[min, max]`（含边界）或 `[min, max, inclusive]`（`inclusive: false`
+  表示开区间，如直线绿条尾键的默认判定）。
+- **未传入的类型使用默认表**；传入的类型整体替换该类型的全部区间。
+- `slideTick` / `slideFlick` 只接受 1 个区间；其余类型必须恰好 4 个。
+- 校验失败（数量不符、`min > max`、未知类型）返回
+  `400`，例如 `judgementWindows has invalid value: slideTick: expected 1 windows, got 2`。
+- 自定义表同时影响判定与默认搜索范围（各类型的最外层窗边）；超出最外层
+  窗边的偏移判 MISS。
+- 使用了自定义表时，响应 `meta.customJudgementWindows` 为 `true`。
+
+响应 `meta` 示例：
+
+```json
+{
+  "simulations": 145392,
+  "totalOffset": 59.0,
+  "semantics": "bestdori-compatible-v1",
+  "customJudgementWindows": false
+}
+```
 
 ## 从候选队伍计算
 

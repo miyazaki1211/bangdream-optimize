@@ -183,6 +183,7 @@ pub fn player_card_definitions(
         player,
         &data.card_definitions,
     )?);
+    definitions.retain(|definition| !definition.stat_placeholder);
     Ok(definitions)
 }
 

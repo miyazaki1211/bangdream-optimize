@@ -139,6 +139,7 @@ mod tests {
                 },
                 rateup: false,
             },
+            stat_placeholder: false,
         }
     }
 

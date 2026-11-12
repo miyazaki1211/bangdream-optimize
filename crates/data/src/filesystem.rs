@@ -1,10 +1,16 @@
+use crate::micro::{
+    build_micro_outcome, calc_parity_band_power, micro_events_with_pairs_from_bestdori,
+    micro_skill_from_bestdori, run_micro_optimize, MicroOptimizeOutcome,
+};
 use crate::{
     chart_from_bestdori, event_bonus, published_score_range_song_selections,
     utils::into_object_map, BestdoriData, DataError, EventData, GameDataSnapshot,
-    MaximizeInputBuilder, PtMaximizeInputBuilder, ScoreRangeInputBuilder,
-    SnapshotMaximizeInputBuilder, SnapshotPtMaximizeInputBuilder, SnapshotScoreRangeInputBuilder,
+    MaximizeInputBuilder, MicroOptimizeInputBuilder, PtMaximizeInputBuilder,
+    ScoreRangeInputBuilder, SnapshotMaximizeInputBuilder, SnapshotPtMaximizeInputBuilder,
+    SnapshotScoreRangeInputBuilder,
 };
 use async_trait::async_trait;
+use bangdream_optimize_core::micro_opt::MicroOptimizeInput;
 use bangdream_optimize_core::{
     AreaItemDefinition, BuildResult, CardDefinition, EventType, ItemSearchOptions,
     PlayerCardConfig, PlayerConfig, PreferredItemTarget, PtEvaluateRequest, PtEvaluateResult,
@@ -323,6 +329,148 @@ impl BestdoriFilesystemCalculationInputBuilder {
         )
     }
 
+    /// Resolves everything the micro-optimisation kernel needs from the
+    /// player profile and the static mirror, then runs the search.
+    ///
+    /// Event data resolution and band power follow `/v1/calc-result`
+    /// (`maximize`) exactly: player event preset -> detailed
+    /// `api/events/{id}.json` -> aggregated file (plus the character
+    /// parameter bonus fix), and the best `SelectedAreaItems` combination
+    /// for this fixed team. Event bonuses only feed band power for
+    /// `challenge`/`versus` events, mirroring Bestdori's stat gating; every
+    /// other Bestdori event label (including `story`) stays accepted.
+    pub fn micro_optimize_sync(
+        &self,
+        player: &PlayerConfig,
+        event_id: u32,
+        song: &SongSelection,
+        team: &[u32; 5],
+        judgement_windows: Option<bangdream_optimize_core::micro_opt::JudgementWindowSet>,
+    ) -> Result<MicroOptimizeOutcome, DataError> {
+        difficulty_name(song.difficulty)?;
+        let event = player_event_value(player, event_id)
+            .map(Ok)
+            .unwrap_or_else(|| self.event_value(event_id))?;
+        let event = self.apply_event_character_parameter_bonus_fix(event_id, event);
+        let event_type_label = event
+            .get("eventType")
+            .and_then(Value::as_str)
+            .ok_or(DataError::MissingField { field: "eventType" })?
+            .to_owned();
+        let bonus = event_bonus(&event)?;
+        let bonus_into_stat = matches!(event_type_label.as_str(), "challenge" | "versus");
+        let stat_bonus = if bonus_into_stat {
+            bonus
+        } else {
+            Default::default()
+        };
+
+        let definitions = self.card_definitions(player)?;
+        let mut prepared_team = Vec::with_capacity(team.len());
+        for &card_id in team {
+            let definition = definitions.get(&card_id).ok_or(DataError::MissingEntity {
+                kind: "team card (not in profile or excluded)",
+                id: card_id.to_string(),
+            })?;
+            if definition.stat_placeholder {
+                return Err(DataError::MissingEntity {
+                    kind: "team card (stat placeholder excluded)",
+                    id: card_id.to_string(),
+                });
+            }
+            let player_card =
+                player
+                    .card_list
+                    .get(&card_id.to_string())
+                    .ok_or(DataError::MissingEntity {
+                        kind: "playerCardConfig",
+                        id: card_id.to_string(),
+                    })?;
+            let character_bonus = player
+                .character_bouns
+                .get(&definition.character_id.to_string())
+                .ok_or(DataError::MissingEntity {
+                    kind: "characterBonus",
+                    id: definition.character_id.to_string(),
+                })?;
+            prepared_team.push(bangdream_optimize_core::prepare_card(
+                definition,
+                player_card,
+                character_bonus,
+                &stat_bonus,
+            )?);
+        }
+
+        let mut skills = Vec::with_capacity(prepared_team.len());
+        let mut skill_ids = [0u32; 5];
+        for (slot, card) in prepared_team.iter().enumerate() {
+            let skill_id = self.game_data.card_skill_id(card.card_id)?;
+            let value = self
+                .game_data
+                .skill_value(skill_id)
+                .ok_or(DataError::MissingEntity {
+                    kind: "skill",
+                    id: skill_id.to_string(),
+                })?;
+            skill_ids[slot] = skill_id;
+            skills.push(micro_skill_from_bestdori(
+                skill_id,
+                value,
+                card.skill_level,
+            )?);
+        }
+
+        let play_level = self.song_level(song.song_id, song.difficulty)?;
+        let chart_data = read_json(&chart_path(
+            &self.charts_dir,
+            song.song_id,
+            song.difficulty,
+        )?)?;
+        let (events, connection_pairs) = micro_events_with_pairs_from_bestdori(&chart_data)?;
+
+        let area_item_definitions = self.area_item_definitions(player, Server::Jp)?;
+        let percent = bangdream_optimize_core::calculate_area_item_percent(
+            &player.area_item,
+            &area_item_definitions,
+        )?;
+        let band_power = calc_parity_band_power(&prepared_team, &percent);
+        let first = &prepared_team[0];
+        let team_band_id = prepared_team
+            .iter()
+            .all(|card| card.band_id == first.band_id)
+            .then_some(first.band_id);
+        let team_attribute = prepared_team
+            .iter()
+            .all(|card| card.attribute == first.attribute)
+            .then_some(first.attribute);
+
+        let custom_judgement_windows = judgement_windows.is_some();
+        let input = MicroOptimizeInput {
+            events: events.clone(),
+            play_level,
+            band_power,
+            skills,
+            team_band_id,
+            team_attribute,
+            judgement_windows: judgement_windows.unwrap_or_default(),
+            skill_window_end_grace: 0.0,
+            connection_pairs,
+        };
+        let result = run_micro_optimize(&input)?;
+        Ok(build_micro_outcome(
+            event_id,
+            event_type_label,
+            song.clone(),
+            &events,
+            play_level,
+            &prepared_team,
+            skill_ids,
+            band_power,
+            &result,
+            custom_judgement_windows,
+        ))
+    }
+
     pub fn published_score_range_songs(
         &self,
         server: Server,
@@ -585,6 +733,20 @@ impl MaximizeInputBuilder for BestdoriFilesystemCalculationInputBuilder {
         options: ItemSearchOptions,
     ) -> Result<BuildResult, DataError> {
         self.maximize_sync(player, server, event_id, options)
+    }
+}
+
+#[async_trait]
+impl MicroOptimizeInputBuilder for BestdoriFilesystemCalculationInputBuilder {
+    async fn micro_optimize(
+        &self,
+        player: PlayerConfig,
+        event_id: u32,
+        song: SongSelection,
+        team: [u32; 5],
+        judgement_windows: Option<bangdream_optimize_core::micro_opt::JudgementWindowSet>,
+    ) -> Result<MicroOptimizeOutcome, DataError> {
+        self.micro_optimize_sync(&player, event_id, &song, &team, judgement_windows)
     }
 }
 

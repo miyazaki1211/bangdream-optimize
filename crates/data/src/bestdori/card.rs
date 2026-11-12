@@ -21,16 +21,29 @@ pub(super) fn card_definition(
     character: &Value,
     skill: &Value,
 ) -> Result<CardDefinition, DataError> {
+    let level_stats = level_stats(card)?;
     Ok(CardDefinition {
         card_id,
         character_id: character_id(card)?,
         band_id: get_u32(character, "bandId")?,
         rarity: get_u8(card, "rarity")?,
         attribute: parse_attribute(get_str(card, "attribute")?)?,
-        level_stats: level_stats(card)?,
+        stat_placeholder: is_stat_placeholder(&level_stats),
+        level_stats,
         training_stat: training_stat(card)?,
         episode_stats: episode_stats(card)?,
         skill: skill_definition(skill_id(card)?, skill)?,
+    })
+}
+
+/// Bestdori 对部分活动卡（卡片创作、ガルパ杯奖品等）未收录真实属性，
+/// 所有等级三维均为相同的占位值（15000 或 14000）。
+/// 真实卡 1 级单维仅数百，且三维几乎不会恰好全等；以此判定占位数据。
+fn is_stat_placeholder(levels: &BTreeMap<u8, Stat>) -> bool {
+    levels.get(&1).is_some_and(|stat| {
+        stat.performance >= 10_000
+            && stat.technique == stat.performance
+            && stat.visual == stat.performance
     })
 }
 

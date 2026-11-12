@@ -94,13 +94,13 @@ pub fn chart_from_bestdori(level: i32, chart_data: &Value) -> Result<Chart, Data
 }
 
 #[derive(Debug, Clone, Copy)]
-struct BpmPoint {
-    beat: f64,
-    bpm: f64,
-    time: f64,
+pub(crate) struct BpmPoint {
+    pub(crate) beat: f64,
+    pub(crate) bpm: f64,
+    pub(crate) time: f64,
 }
 
-fn compute_bpm_times(points: &mut [BpmPoint]) -> Result<(), DataError> {
+pub(crate) fn compute_bpm_times(points: &mut [BpmPoint]) -> Result<(), DataError> {
     if points.is_empty() {
         return Err(DataError::MissingField { field: "BPM" });
     }
@@ -113,7 +113,7 @@ fn compute_bpm_times(points: &mut [BpmPoint]) -> Result<(), DataError> {
     Ok(())
 }
 
-fn time_for_beat(points: &[BpmPoint], beat: f64) -> Result<f64, DataError> {
+pub(crate) fn time_for_beat(points: &[BpmPoint], beat: f64) -> Result<f64, DataError> {
     let mut last = points
         .first()
         .ok_or(DataError::MissingField { field: "BPM" })?;

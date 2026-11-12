@@ -9,6 +9,7 @@ pub mod filesystem;
 #[cfg(feature = "native-cache")]
 pub mod hero_asset;
 pub mod maximize;
+pub mod micro;
 pub mod preparation;
 pub mod pt_evaluate;
 pub mod pt_maximize;
@@ -29,6 +30,11 @@ pub use filesystem::{
     BestdoriFilesystemConfig,
 };
 pub use maximize::{SnapshotCalculationInputBuilder, SnapshotMaximizeInputBuilder};
+pub use micro::{
+    build_micro_outcome, calc_parity_band_power, micro_events_from_bestdori,
+    micro_events_with_pairs_from_bestdori,
+    micro_skill_from_bestdori, run_micro_optimize, MicroOptimizeOutcome, MICRO_SEMANTICS_VERSION,
+};
 pub use preparation::{
     event_songs, initialized_charts, prepare_event_context, PreparedEventContext,
 };
@@ -39,8 +45,8 @@ pub use score_range::{
 };
 pub use snapshot::{CalculationDataSnapshot, EventCalculationData, EventData, GameDataSnapshot};
 pub use traits::{
-    CalculationInputBuilder, MaximizeInputBuilder, PlayerConfigRepository, PlayerConfigStore,
-    PtMaximizeInputBuilder, ScoreRangeInputBuilder,
+    CalculationInputBuilder, MaximizeInputBuilder, MicroOptimizeInputBuilder,
+    PlayerConfigRepository, PlayerConfigStore, PtMaximizeInputBuilder, ScoreRangeInputBuilder,
 };
 
 pub type BestdoriFilesystemCalculator = BestdoriFilesystemCalculationInputBuilder;

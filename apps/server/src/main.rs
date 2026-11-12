@@ -17,10 +17,12 @@ use bangdream_optimize_core::{
 };
 use bangdream_optimize_data::{
     BestdoriCachedFilesystemCalculator, BestdoriFilesystemCalculator, BestdoriFilesystemConfig,
-    BestdoriStaticMirrorConfig, DataError, MaximizeInputBuilder, PlayerConfigStore,
-    PtMaximizeInputBuilder, ScoreRangeInputBuilder,
+    BestdoriStaticMirrorConfig, DataError, MaximizeInputBuilder, MicroOptimizeInputBuilder,
+    PlayerConfigStore, PtMaximizeInputBuilder, ScoreRangeInputBuilder,
 };
-use bangdream_optimize_service::{MaximizeService, PtMaximizeService, ScoreRangeService};
+use bangdream_optimize_service::{
+    MaximizeService, MicroOptimizeService, PtMaximizeService, ScoreRangeService,
+};
 use bangdream_optimize_storage_mongodb::MongoPlayerConfigStore;
 use feedback::{
     validate_attachment_set, FeedbackAttachment, FeedbackRateLimiter, FeedbackReceipt,
@@ -28,6 +30,7 @@ use feedback::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::{
     env,
     fs::{self, OpenOptions},
@@ -59,6 +62,8 @@ struct AppState {
     score_range_searcher: Option<Arc<dyn ScoreRangeInputBuilder>>,
     pt_maximize_service: Option<PtMaximizeService>,
     pt_maximize_searcher: Option<Arc<dyn PtMaximizeInputBuilder>>,
+    micro_optimize_service: Option<MicroOptimizeService>,
+    micro_optimize_searcher: Option<Arc<dyn MicroOptimizeInputBuilder>>,
     feedback_sender: Option<Arc<dyn FeedbackSender>>,
     feedback_rate_limiter: FeedbackRateLimiter,
     trust_proxy_headers: bool,
@@ -96,9 +101,16 @@ impl AppState {
             _ => None,
         };
         let pt_maximize_searcher = pt_maximize_searcher_from_env()?;
-        let pt_maximize_service = match (player_store, pt_maximize_searcher.clone()) {
+        let pt_maximize_service = match (player_store.clone(), pt_maximize_searcher.clone()) {
             (Some(player_store), Some(searcher)) => {
                 Some(PtMaximizeService::new(player_store, searcher))
+            }
+            _ => None,
+        };
+        let micro_optimize_searcher = micro_optimize_searcher_from_env()?;
+        let micro_optimize_service = match (player_store, micro_optimize_searcher.clone()) {
+            (Some(player_store), Some(searcher)) => {
+                Some(MicroOptimizeService::new(player_store, searcher))
             }
             _ => None,
         };
@@ -111,6 +123,8 @@ impl AppState {
             score_range_searcher,
             pt_maximize_service,
             pt_maximize_searcher,
+            micro_optimize_service,
+            micro_optimize_searcher,
             feedback_sender,
             feedback_rate_limiter: FeedbackRateLimiter::from_env(),
             trust_proxy_headers: env_bool("BANGDREAM_OPTIMIZE_FEEDBACK_TRUST_PROXY_HEADERS", false),
@@ -369,6 +383,22 @@ fn pt_maximize_searcher_from_env() -> Result<Option<Arc<dyn PtMaximizeInputBuild
         Some(config) => Ok(Some(Arc::new(
             BestdoriFilesystemCalculator::load(config).map_err(|err| err.to_string())?,
         ) as Arc<dyn PtMaximizeInputBuilder>)),
+        None => Ok(None),
+    }
+}
+
+fn micro_optimize_searcher_from_env() -> Result<Option<Arc<dyn MicroOptimizeInputBuilder>>, String>
+{
+    if let Some(config) = bestdori_static_mirror_config_from_env() {
+        return Ok(Some(Arc::new(
+            BestdoriCachedFilesystemCalculator::new(config).map_err(|err| err.to_string())?,
+        ) as Arc<dyn MicroOptimizeInputBuilder>));
+    }
+
+    match bestdori_config_from_env() {
+        Some(config) => Ok(Some(Arc::new(
+            BestdoriFilesystemCalculator::load(config).map_err(|err| err.to_string())?,
+        ) as Arc<dyn MicroOptimizeInputBuilder>)),
         None => Ok(None),
     }
 }
@@ -1322,6 +1352,11 @@ fn build_app(
             .route("/v1/pt-maximize/from-config", post(pt_maximize_from_config))
             .route("/v1/pt-evaluate", post(pt_evaluate_result))
             .route("/v1/pt-evaluate/from-config", post(pt_evaluate_from_config))
+            .route("/v1/micro-optimize", post(micro_optimize_result))
+            .route(
+                "/v1/micro-optimize/from-config",
+                post(micro_optimize_from_config),
+            )
             .route("/v1/calc-result", post(maximize_result))
             .route(
                 "/v1/maximize/from-candidates",
@@ -1493,6 +1528,108 @@ async fn maximize_result(
                 .log_result("maximize", Some(request.server), request.event_id, &result);
             ok_response(result)
         }
+        Err(err) => data_error_response(err),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MicroOptimizeRequest {
+    player_id: i64,
+    event_id: u32,
+    song_id: u32,
+    difficulty: u8,
+    team: [u32; 5],
+    /// Optional per-kind judgement window overrides (frames, inclusive
+    /// `[min, max]`, ordered perfect → great → good → bad; one window for
+    /// `slideTick`/`slideFlick`). Kinds not listed keep Bestdori's defaults.
+    #[serde(default)]
+    judgement_windows: BTreeMap<String, Vec<bangdream_optimize_core::micro_opt::JudgementWindowInput>>,
+}
+
+fn build_judgement_windows(
+    overrides: &BTreeMap<String, Vec<bangdream_optimize_core::micro_opt::JudgementWindowInput>>,
+) -> Result<Option<bangdream_optimize_core::micro_opt::JudgementWindowSet>, DataError> {
+    if overrides.is_empty() {
+        return Ok(None);
+    }
+    bangdream_optimize_core::micro_opt::JudgementWindowSet::from_kind_overrides(overrides)
+        .map(Some)
+        .map_err(|error| DataError::InvalidField {
+            field: "judgementWindows",
+            value: format!("{}: {}", error.kind, error.reason),
+        })
+}
+
+async fn micro_optimize_result(
+    State(state): State<AppState>,
+    Json(request): Json<MicroOptimizeRequest>,
+) -> impl IntoResponse {
+    let Some(micro_service) = state.micro_optimize_service.as_ref() else {
+        return service_unavailable("micro-optimize service is not configured");
+    };
+    let judgement_windows = match build_judgement_windows(&request.judgement_windows) {
+        Ok(windows) => windows,
+        Err(err) => return data_error_response(err),
+    };
+
+    let song = bangdream_optimize_core::SongSelection {
+        song_id: request.song_id,
+        difficulty: request.difficulty,
+    };
+    match micro_service
+        .optimize_for_player(
+            request.player_id,
+            request.event_id,
+            song,
+            request.team,
+            judgement_windows,
+        )
+        .await
+    {
+        Ok(result) => ok_response(result),
+        Err(err) => data_error_response(err),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MicroOptimizeFromConfigApiRequest {
+    player: bangdream_optimize_core::PlayerConfig,
+    event_id: u32,
+    song_id: u32,
+    difficulty: u8,
+    team: [u32; 5],
+    #[serde(default)]
+    judgement_windows: BTreeMap<String, Vec<bangdream_optimize_core::micro_opt::JudgementWindowInput>>,
+}
+
+async fn micro_optimize_from_config(
+    State(state): State<AppState>,
+    Json(request): Json<MicroOptimizeFromConfigApiRequest>,
+) -> impl IntoResponse {
+    let Some(searcher) = state.micro_optimize_searcher.as_ref() else {
+        return service_unavailable("micro-optimize builder is not configured");
+    };
+    let judgement_windows = match build_judgement_windows(&request.judgement_windows) {
+        Ok(windows) => windows,
+        Err(err) => return data_error_response(err),
+    };
+    let song = bangdream_optimize_core::SongSelection {
+        song_id: request.song_id,
+        difficulty: request.difficulty,
+    };
+    match searcher
+        .micro_optimize(
+            request.player,
+            request.event_id,
+            song,
+            request.team,
+            judgement_windows,
+        )
+        .await
+    {
+        Ok(result) => ok_response(result),
         Err(err) => data_error_response(err),
     }
 }
