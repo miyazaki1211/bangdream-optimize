@@ -13,7 +13,7 @@ echo "web root: ${root}"
 echo "game data: http://${host}:${port}/game-data -> ${game_data_root}"
 echo "backend api: configured by ${root}/config.js"
 
-exec python3 scripts/serve-web.py \
+exec python scripts/serve-web.py \
   --host "${host}" \
   --port "${port}" \
   --web-root "${root}" \

@@ -24,3 +24,12 @@
 # Automatically refreshed public CN client-version configuration
 /var/bangdream-account/client-version.json
 /var/bangdream-account/.client-version-*.tmp
+
+# Local-only runtime data (never push)
+/var/game-data-cache/
+/var/telemetry/
+
+# Machine-dependent / temporary local tests (depend on var/game-data-cache)
+/crates/data/tests/micro_golden.rs
+/crates/data/tests/micro_plan_eval.rs
+/crates/data/tests/micro_swap_diag.rs

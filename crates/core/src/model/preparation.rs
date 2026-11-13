@@ -496,7 +496,7 @@ fn attribute_target_key(target_attributes: &[Attribute]) -> String {
         .join(",")
 }
 
-fn band_key_matches(key: &str, band_id: u32) -> bool {
+pub fn band_key_matches(key: &str, band_id: u32) -> bool {
     key == ALL_BAND_KEY
         || key
             .split(',')
@@ -504,7 +504,7 @@ fn band_key_matches(key: &str, band_id: u32) -> bool {
             .any(|target_band_id| target_band_id == band_id)
 }
 
-fn attribute_key_matches(key: &str, attribute: Attribute) -> bool {
+pub fn attribute_key_matches(key: &str, attribute: Attribute) -> bool {
     key == ALL_ATTRIBUTE_KEY || key.split(',').any(|part| part == attribute.as_str())
 }
 
